@@ -28,6 +28,24 @@ class DropboxHandler(HTTPURLHandler):
 
     def _isfile(self, path):
         return path in self.cache_map
+    
+    def _get_local_path(
+        self,
+        path: str,
+        force: bool = False,
+        cache_dir: Optional[str] = None,
+        **kwargs: Any,
+    ) -> str:
+        res = super()._get_local_path(path, force, cache_dir, **kwargs)
+
+        if res.endswith("?dl=1"):
+            # Move file
+            new_file_name = res.removesuffix("?dl=1")
+
+            os.rename(res, new_file_name)
+            self.cache_map[path] = new_file_name
+            res = new_file_name
+        return res
 
 
 PathManager = PathManagerBase()
