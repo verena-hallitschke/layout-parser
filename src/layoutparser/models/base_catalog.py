@@ -12,10 +12,14 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import logging
 import os
+import uuid
 from typing import Any, Optional
+from urllib.parse import urlparse
 
-from iopath.common.file_io import HTTPURLHandler
+from iopath.common.download import download
+from iopath.common.file_io import HTTPURLHandler, get_cache_dir, file_lock
 from iopath.common.file_io import PathManager as PathManagerBase
 
 # A trick learned from https://github.com/facebookresearch/detectron2/blob/65faeb4779e4c142484deeece18dc958c5c9ad18/detectron2/utils/file_io.py#L3
@@ -30,7 +34,7 @@ class DropboxHandler(HTTPURLHandler):
         return ["https://www.dropbox.com"]
 
     def _isfile(self, path):
-        return path in self.cache_map
+        return path.removesuffix("?dl=1") in self.cache_map
     
     def _get_local_path(
         self,
@@ -39,16 +43,31 @@ class DropboxHandler(HTTPURLHandler):
         cache_dir: Optional[str] = None,
         **kwargs: Any,
     ) -> str:
-        res = super()._get_local_path(path, force, cache_dir, **kwargs)
+        # Copy from iopath.common.file_io.HTTPURLHandler._get_local_path 
+        # with small change to support ?dl=1 in dropbox links
+        self._check_kwargs(kwargs)
+        if (
+            force
+            or path not in self.cache_map
+            or not os.path.exists(self.cache_map[path])
+        ):
+            logger = logging.getLogger(__name__)
+            parsed_url = urlparse(path)
+            dirname = os.path.join(
+                get_cache_dir(cache_dir), os.path.dirname(parsed_url.path.lstrip("/"))
+            )
+            filename = path.split("/")[-1].removesuffix("?dl=1")
+            if len(filename) > self.MAX_FILENAME_LEN:
+                filename = filename[:100] + "_" + uuid.uuid4().hex
 
-        if res.endswith("?dl=1"):
-            # Move file
-            new_file_name = res.removesuffix("?dl=1")
-
-            os.rename(res, new_file_name)
-            self.cache_map[path] = new_file_name
-            res = new_file_name
-        return res
+            cached = os.path.join(dirname, filename)
+            with file_lock(cached):
+                if not os.path.isfile(cached):
+                    logger.info("Downloading {} ...".format(path))
+                    cached = download(path, dirname, filename=filename)
+            logger.info("URL {} cached in {}".format(path, cached))
+            self.cache_map[path] = cached
+        return self.cache_map[path]
 
 
 PathManager = PathManagerBase()
